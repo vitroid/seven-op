@@ -22,7 +22,21 @@ int oneframe(int mode = 0, int debug=0){
   pWB = Configure_gro(stdin);
   sWaters waters = pWB.first;
   Vector3d box  = pWB.second;
-
+  
+  if ( mode == 4 ){
+    cout << "@BOX3" << endl;
+    cout << box[0] << " "
+	 << box[1] << " "
+	 << box[2] << endl;
+    cout << "@AR3A" << endl;
+    cout << waters.size() << endl;
+    for(int i=0; i<waters.size(); i++){
+      cout << waters[i].com[0] << " "
+	   << waters[i].com[1] << " "
+	   << waters[i].com[2] << endl;
+    }
+    exit(0);
+  }
   int lattice = latticeSize(waters.size()); //assume subic box
   Vector3d grid;
   for(int dim=0;dim<3;dim++){
@@ -131,26 +145,66 @@ int oneframe(int mode = 0, int debug=0){
     cerr << "No problem. Go ahead!" << endl;
   }
   //#stage 3: determine the HB networks
+  //molecules must be on the lattice
+
+  if ( mode == 3 ){
+    cout << "@NGPH" << endl;
+    cout << waters.size() << endl;
+  }
   vector<int> hb[waters.size()];
-  for(int i=0;i<waters.size(); i++){
-    for(int j=i+1;j<waters.size(); j++){
-      Vector3d delta = Wrap(waters[i].com-waters[j].com,box);
-      if (delta.norm() < 3.2){ //#Å; threshold for O-O adjacency
-	//#molecule pair is close enough
-	//#find the shortest OH pair distance among four possible combinations
-	vector<float> d;
-	d.push_back(( delta + waters[i].rH1 ).norm());
-	d.push_back(( delta + waters[i].rH2 ).norm());
-	d.push_back(( delta - waters[j].rH1 ).norm());
-	d.push_back(( delta - waters[j].rH2 ).norm());
-	if (min(d) < 2.2) { //#Å; threshold for O-H adjacency
-	  //#register as a hydrogen bond.
-	  //#bond direction is ignored.
-	  hb[i].push_back(j); //#hb[i] contains the labels of the HB partners
-	  hb[j].push_back(i);
+  //lattice B
+  for(int ix=0;ix<lattice;ix++){
+    for(int iy=0;iy<lattice;iy++){
+      for(int iz=0;iz<lattice;iz++){
+	int Lb = (ix*lattice+iy)*lattice+iz;
+	int i = latticeB[Lb];
+	if ( i >= 0 ){
+	  //lattice A
+	  for(int jx=0;jx<2;jx++){
+	    for(int jy=0;jy<2;jy++){
+	      for(int jz=0;jz<2;jz++){
+		int kx = (ix+jx) % lattice;
+		int ky = (iy+jy) % lattice;
+		int kz = (iz+jz) % lattice;
+		int La = (kx*lattice+ky)*lattice+kz;
+		int j = latticeA[La];
+		if ( j >= 0 ){
+		  Vector3d delta = Wrap(waters[i].com-waters[j].com,box);
+		  //#molecule pair is close enough
+		  //#find the shortest OH pair distance among four possible combinations
+		  float di1 = ( delta + waters[i].rH1 ).norm();
+		  float di2 = ( delta + waters[i].rH2 ).norm();
+		  float dj1 = ( delta - waters[j].rH1 ).norm();
+		  float dj2 = ( delta - waters[j].rH2 ).norm();
+		  float di = min(di1,di2);
+		  float dj = min(dj1,dj2);
+		  float d  = min(di,dj);
+		  if (d < 2.2) {
+		    //#Å; threshold for O-H adjacency
+		    //#register as a hydrogen bond.
+		    //#bond direction is ignored.
+		    if ( mode == 3 ){
+		      if ( di < dj ){
+			cout << i << " " << j << endl;
+		      }
+		      else{
+			cout << j << " " << i << endl;
+		      }
+		    }
+		    hb[i].push_back(j); //#hb[i] contains the labels of the HB partners
+		    hb[j].push_back(i);
+		  }
+		}
+	      }
+	    }
+	  }
 	}
       }
     }
+  }
+  if ( mode == 3 ){
+    cout << "-1 -1" << endl;
+    exit(0);
   }
   if (debug){
     for(int i=0;i<hb[0].size();i++){
@@ -167,7 +221,6 @@ int oneframe(int mode = 0, int debug=0){
     cout << op[i] << endl;
   }
 
-  if ( mode == 1 ) {
     int cluster[waters.size()];
     for(int i=0;i<waters.size(); i++){
       //#-1 means an isolated node.
@@ -229,12 +282,51 @@ int oneframe(int mode = 0, int debug=0){
 	}
       }
     }
+    if ( mode == 0 ){
+      exit(0);
+    }
+  if ( mode >= 1 ) {
     cout << "@GRUP" << endl;
     cout << waters.size() << endl;
     for(int i=0;i<waters.size(); i++){
       //#-1 means an isolated node.
       cout << MyGroup(i,cluster) << endl;
     }
+  }
+  if ( mode >= 2 ){
+    cout << "@OPSD" << endl;
+    cout << waters.size() << endl;
+    //lattice A
+    for(int ix=0;ix<lattice;ix++){
+      for(int iy=0;iy<lattice;iy++){
+	for(int iz=0;iz<lattice;iz++){
+	  int Li = (ix*lattice+iy)*lattice+iz;
+	  int i = latticeA[Li];
+	  if ( i >= 0 ){
+	    float opi = op[i];
+	    //lattice A
+	    for(int jx=0;jx<lattice;jx++){
+	      for(int jy=0;jy<lattice;jy++){
+		for(int jz=0;jz<lattice;jz++){
+		  int Lj = (jx*lattice+jy)*lattice+jz;
+		  int j = latticeA[Lj];
+		  if ( j > i ){
+		    Vector3d delta = Wrap(waters[i].com-waters[j].com,box);
+		    float opj = op[j];
+		    //#i and j are on the same sublattice
+		    double dist  = delta.norm();
+		    if (dist < box(0)/2){
+		      cout << i << " " << j << " " << dist << " " << opi*opj << endl;
+		    }
+		  }
+		}
+	      }
+	    }
+	  }
+	}
+      }
+    }
+    cout << "-1 -1 0 0\n";
   }
 }
 
@@ -244,12 +336,24 @@ int oneframe(int mode = 0, int debug=0){
 
 int main(int argc, char* argv[])
 {
-  int mode = 0;
+  int mode = 1;
   //mode 0 : raw OP
   //mode 1 : +cluster size
+  //mode 2 : +spatial correlation
+  //mode 3 : network topology only
+  //mode 4 : CoM coordinate in @AR3A.
   if ( argc == 2 ){
-    if ( strcmp(argv[1], "-c") == 0 ){
-      mode = 1;
+    if ( strcmp(argv[1], "-0") == 0 ){
+      mode = 0;
+    }
+    if ( strcmp(argv[1], "-r") == 0 ){
+      mode = 2;
+    }
+    else if ( strcmp(argv[1], "-n") == 0 ){
+      mode = 3;
+    }
+    else if ( strcmp(argv[1], "-c") == 0 ){
+      mode = 4;
     }
   }
   oneframe(mode);
