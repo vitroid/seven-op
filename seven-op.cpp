@@ -9,6 +9,9 @@
 
 
 #include "seven-op.h"
+#include "analysis.h"
+
+
 
 
 int oneframe(int mode = 0, int debug=0){
@@ -24,23 +27,14 @@ int oneframe(int mode = 0, int debug=0){
   Vector3d box  = pWB.second;
   
   if ( mode == 4 ){
-    cout << "@BOX3" << endl;
-    cout << box[0] << " "
-	 << box[1] << " "
-	 << box[2] << endl;
-    cout << "@AR3A" << endl;
-    cout << waters.size() << endl;
-    for(int i=0; i<waters.size(); i++){
-      cout << waters[i].com[0] << " "
-	   << waters[i].com[1] << " "
-	   << waters[i].com[2] << endl;
-    }
+    output_coordinates(box, waters);
     exit(0);
   }
-  int lattice = latticeSize(waters.size()); //assume subic box
+  int division = latticeSize(waters.size()); //assume subic box
+  //cerr << division << " division" << endl;
   Vector3d grid;
   for(int dim=0;dim<3;dim++){
-    grid[dim] = box[dim] / lattice;
+    grid[dim] = box[dim] / division;
   }
   if (waters.size() ==0){
     return 0;
@@ -49,85 +43,23 @@ int oneframe(int mode = 0, int debug=0){
     //cout << waters;
   }
   //stage 1.5 optimize the origin of the lattice
-  float delta = 1.0;
-  while( delta > 0.001 ){
-    Vector3d origin(0.0,0.0,0.0);
-    for(int i=0;i<waters.size(); i++){
-      for(int dim=0;dim<3;dim++){
-	//displacement from the lattice points
-	//this might fail when displacement is as large as grid/4.
-	//so we solve it iteratively.
-	origin[dim] += waters[i].com[dim] - rint( waters[i].com[dim] / (grid[dim]/2) ) * (grid[dim]/2);
-      }
-    }
-    delta = 0.0;
-    for(int dim=0;dim<3;dim++){
-      origin[dim] /= waters.size();
-      delta += origin[dim]*origin[dim];
-    }
-    //cout << delta << " Drift" << endl;
-    for(int i=0;i<waters.size(); i++){
-      for(int dim=0;dim<3;dim++){
-	waters[i].com[dim] -= origin[dim];
-      }
-    }
-  }    
+  optimize_water_positions(waters, grid);
   //#stage 2: determine the double lattices
-  int mygroup[waters.size()];
-  int latticeA[lattice*lattice*lattice];
-  int latticeB[lattice*lattice*lattice];
-  for(int i=0;i<lattice*lattice*lattice; i++){
-    latticeA[i] = -1;
-    latticeB[i] = -1;
+  int mycubiclattice[waters.size()];
+  int residentA[division*division*division];
+  int residentB[division*division*division];
+  int myaddress[waters.size()];
+  for(int i=0;i<division*division*division; i++){
+    residentA[i] = -1;
+    residentB[i] = -1;
   }
-  float dsum = 0.0;
-  for(int i=0;i<waters.size(); i++){
-    float dA=0,dB=0;
-    for(int dim=0;dim<3;dim++){
-      float d = waters[i].com[dim] - rint( waters[i].com[dim] / grid[dim] ) * grid[dim];
-      dA += d*d;
-    }
-    for(int dim=0;dim<3;dim++){
-      float d = waters[i].com[dim] - (rint( (waters[i].com[dim]-grid[dim]/2) / grid[dim] ) * grid[dim] + grid[dim]/2);
-      dB += d*d;
-    }
-    dsum += min(dA,dB);
-    mygroup[i] = (dA < dB);
-    if ( mygroup[i] ){
-      int ix = rint( waters[i].com[0] / grid[0] );
-      ix = (ix + lattice) % lattice;
-      int iy = rint( waters[i].com[1] / grid[1] );
-      iy = (iy + lattice) % lattice;
-      int iz = rint( waters[i].com[2] / grid[2] );
-      iz = (iz + lattice) % lattice;
-      int j = (ix*lattice+iy)*lattice+iz;
-      if ( latticeA[j] >= 0 ){
-	fprintf(stderr, "Two residents in a cell %d: %d,%d.\n", j, i, latticeA[j]);
-	exit(1);
-      }
-      latticeA[j] = i;
-    }
-    else{
-      int ix = rint( (waters[i].com[0]-grid[0]/2) / grid[0] );
-      ix = (ix + lattice) % lattice;
-      int iy = rint( (waters[i].com[1]-grid[1]/2) / grid[1] );
-      iy = (iy + lattice) % lattice;
-      int iz = rint( (waters[i].com[2]-grid[2]/2) / grid[2] );
-      iz = (iz + lattice) % lattice;
-      int j = (ix*lattice+iy)*lattice+iz;
-      if ( latticeB[j] >= 0 ){
-	fprintf(stderr, "Two residents in a cell %d: %d,%d.\n", j, i, latticeB[j]);
-	exit(1);
-      }
-      latticeB[j] = i;
-    }
-  }
-  //cerr << dsum << " Total square displacements from the lattice points." << endl;
+  address_on_the_lattice( waters, grid, division, mycubiclattice, residentA, residentB, myaddress );
+
   //#check the number of groups (should be 2)
   //#but you may have to loosen the condition.
   map<int, int> groups;
   for(int i=0;i<waters.size(); i++){
-    int myg = mygroup[i];
+    int myg = mycubiclattice[i];
     if (groups.find(myg)==groups.end()){
       groups[myg] = 0;
     }
@@ -147,68 +79,24 @@ int oneframe(int mode = 0, int debug=0){
   //#stage 3: determine the HB networks
   //molecules must be on the lattice
 
+  vector<int> uhb[waters.size()];//undirected
+  vector<int> dhb[waters.size()];//directed
+  hydrogen_bond(residentA, residentB, box, waters, division, uhb, dhb);
   if ( mode == 3 ){
     cout << "@NGPH" << endl;
     cout << waters.size() << endl;
-  }
-  vector<int> hb[waters.size()];
-  //lattice B
-  for(int ix=0;ix<lattice;ix++){
-    for(int iy=0;iy<lattice;iy++){
-      for(int iz=0;iz<lattice;iz++){
-	int Lb = (ix*lattice+iy)*lattice+iz;
-	int i = latticeB[Lb];
-	if ( i >= 0 ){
-	  //lattice A
-	  for(int jx=0;jx<2;jx++){
-	    for(int jy=0;jy<2;jy++){
-	      for(int jz=0;jz<2;jz++){
-		int kx = (ix+jx) % lattice;
-		int ky = (iy+jy) % lattice;
-		int kz = (iz+jz) % lattice;
-		int La = (kx*lattice+ky)*lattice+kz;
-		int j = latticeA[La];
-		if ( j >= 0 ){
-		  Vector3d delta = Wrap(waters[i].com-waters[j].com,box);
-		  //#molecule pair is close enough
-		  //#find the shortest OH pair distance among four possible combinations
-		  float di1 = ( delta + waters[i].rH1 ).norm();
-		  float di2 = ( delta + waters[i].rH2 ).norm();
-		  float dj1 = ( delta - waters[j].rH1 ).norm();
-		  float dj2 = ( delta - waters[j].rH2 ).norm();
-		  float di = min(di1,di2);
-		  float dj = min(dj1,dj2);
-		  float d  = min(di,dj);
-		  if (d < 2.2) {
-		    //#Å; threshold for O-H adjacency
-		    //#register as a hydrogen bond.
-		    //#bond direction is ignored.
-		    if ( mode == 3 ){
-		      if ( di < dj ){
-			cout << i << " " << j << endl;
-		      }
-		      else{
-			cout << j << " " << i << endl;
-		      }
-		    }
-		    hb[i].push_back(j); //#hb[i] contains the labels of the HB partners
-		    hb[j].push_back(i);
-		  }
-		}
-	      }
-	    }
-	  }
-	}
+    for(int i=0;i<waters.size(); i++){
+      for(int k=0; k<dhb[i].size(); k++){
+	int j = dhb[i][k];
+	cout << i << " " << j << endl;
       }
     }
-  }
-  if ( mode == 3 ){
     cout << "-1 -1" << endl;
     exit(0);
   }
   if (debug){
-    for(int i=0;i<hb[0].size();i++){
-      cout << hb[0][i] << " ";
+    for(int i=0;i<dhb[0].size();i++){
+      cout << dhb[0][i] << " ";
     }
     cout << endl;
   }
@@ -217,74 +105,99 @@ int oneframe(int mode = 0, int debug=0){
   cout << waters.size() << endl;
   vector<float> op;
   for(int i=0;i<waters.size(); i++){
-    op.push_back(OrderParameter2(i,hb[i],waters,box));
+    op.push_back(OrderParameter2(i,uhb[i],waters,box));
     cout << op[i] << endl;
   }
-
-    int cluster[waters.size()];
+  //////topological quench (structure optimization)
+  //8 neighbor lattice point list
+  //first four are negative op directions, and the rest are positive op directions.
+  vector<int> neighborA[division*division*division];
+  vector<int> neighborB[division*division*division];
+  list_neighbors(division, neighborA, neighborB);
+  vector<int> assign[waters.size()];  //optimized network
+  estimate_optimized_network(waters,mycubiclattice,neighborA,
+			     neighborB,op,residentA,residentB,myaddress,assign);
+  if ( mode == 5 ){
+    cout << "@NGPH" << endl;
+    cout << waters.size() << endl;
+    //output only the "regular" bonds
     for(int i=0;i<waters.size(); i++){
-      //#-1 means an isolated node.
-      cluster[i] = -1;
+      for(int k=0; k<dhb[i].size(); k++){
+	int j = dhb[i][k];
+	if ( assign[i][j] == 1 ){
+	  cout << i << " " << j << endl;
+	}
+      }
     }
-    //lattice A
-    for(int ix=0;ix<lattice;ix++){
-      for(int iy=0;iy<lattice;iy++){
-	for(int iz=0;iz<lattice;iz++){
-	  int j = (ix*lattice+iy)*lattice+iz;
-	  int res = latticeA[j];
-	  if ( res >= 0 ){
-	    int ixi = (ix+1) % lattice;
-	    int jx = (ixi*lattice+iy)*lattice+iz;
-	    int resx = latticeA[jx];
-	    if ( (resx >= 0 ) && ( op[res] * op[resx] > 0 ) ){
-	      //same sign
-	      BindNodes(res,resx,cluster);
-	    }
-	    int iyi = (iy+1) % lattice;
-	    int jy = (ix*lattice+iyi)*lattice+iz;
-	    int resy = latticeA[jy];
-	    if ( (resy >= 0 ) && ( op[res] * op[resy] > 0 ) ){
-	      //same sign
-	      BindNodes(res,resy,cluster);
-	    }
-	    int izi = (iz+1) % lattice;
-	    int jz = (ix*lattice+iy)*lattice+izi;
-	    int resz = latticeA[jz];
-	    if ( (resz >= 0 ) && ( op[res] * op[resz] > 0 ) ){
-	      //same sign
-	      BindNodes(res,resz,cluster);
-	    }
+    cout << "-1 -1" << endl;
+    exit(0);
+  }
+	
+  ////////cluster analysis
+  int cluster[waters.size()];
+  for(int i=0;i<waters.size(); i++){
+    //#-1 means an isolated node.
+    cluster[i] = -1;
+  }
+  //lattice A
+  for(int ix=0;ix<division;ix++){
+    for(int iy=0;iy<division;iy++){
+      for(int iz=0;iz<division;iz++){
+	int j = address(ix,iy,iz,division);
+	int res = residentA[j];
+	if ( res >= 0 ){
+	  int ixi = (ix+1) % division;
+	  int jx = address(ixi,iy,iz,division);
+	  int resx = residentA[jx];
+	  if ( (resx >= 0 ) && ( op[res] * op[resx] > 0 ) ){
+	    //same sign
+	    BindNodes(res,resx,cluster);
 	  }
-	  res = latticeB[j];
-	  if ( res >= 0 ){
-	    int ixi = (ix+1) % lattice;
-	    int jx = (ixi*lattice+iy)*lattice+iz;
-	    int resx = latticeB[jx];
-	    if ( (resx >= 0 ) && ( op[res] * op[resx] > 0 ) ){
-	      //same sign
-	      BindNodes(res,resx,cluster);
-	    }
-	    int iyi = (iy+1) % lattice;
-	    int jy = (ix*lattice+iyi)*lattice+iz;
-	    int resy = latticeB[jy];
-	    if ( (resy >= 0 ) && ( op[res] * op[resy] > 0 ) ){
-	      //same sign
-	      BindNodes(res,resy,cluster);
-	    }
-	    int izi = (iz+1) % lattice;
-	    int jz = (ix*lattice+iy)*lattice+izi;
-	    int resz = latticeB[jz];
-	    if ( (resz >= 0 ) && ( op[res] * op[resz] > 0 ) ){
-	      //same sign
-	      BindNodes(res,resz,cluster);
-	    }
+	  int iyi = (iy+1) % division;
+	  int jy = address(ix,iyi,iz,division);
+	  int resy = residentA[jy];
+	  if ( (resy >= 0 ) && ( op[res] * op[resy] > 0 ) ){
+	    //same sign
+	    BindNodes(res,resy,cluster);
+	  }
+	  int izi = (iz+1) % division;
+	  int jz = address(ix,iy,izi,division);
+	  int resz = residentA[jz];
+	  if ( (resz >= 0 ) && ( op[res] * op[resz] > 0 ) ){
+	    //same sign
+	    BindNodes(res,resz,cluster);
+	  }
+	}
+	res = residentB[j];
+	if ( res >= 0 ){
+	  int ixi = (ix+1) % division;
+	  int jx = address(ixi,iy,iz,division);
+	  int resx = residentB[jx];
+	  if ( (resx >= 0 ) && ( op[res] * op[resx] > 0 ) ){
+	    //same sign
+	    BindNodes(res,resx,cluster);
+	  }
+	  int iyi = (iy+1) % division;
+	  int jy = address(ix,iyi,iz,division);
+	  int resy = residentB[jy];
+	  if ( (resy >= 0 ) && ( op[res] * op[resy] > 0 ) ){
+	    //same sign
+	    BindNodes(res,resy,cluster);
+	  }
+	  int izi = (iz+1) % division;
+	  int jz = address(ix,iy,izi,division);
+	  int resz = residentB[jz];
+	  if ( (resz >= 0 ) && ( op[res] * op[resz] > 0 ) ){
+	    //same sign
+	    BindNodes(res,resz,cluster);
 	  }
 	}
       }
     }
-    if ( mode == 0 ){
-      exit(0);
-    }
+  }
+  if ( mode == 0 ){
+    exit(0);
+  }
   if ( mode >= 1 ) {
     cout << "@GRUP" << endl;
     cout << waters.size() << endl;
@@ -293,23 +206,24 @@ int oneframe(int mode = 0, int debug=0){
       cout << MyGroup(i,cluster) << endl;
     }
   }
+  //spatial correlation
   if ( mode >= 2 ){
     cout << "@OPSD" << endl;
     cout << waters.size() << endl;
     //lattice A
-    for(int ix=0;ix<lattice;ix++){
-      for(int iy=0;iy<lattice;iy++){
-	for(int iz=0;iz<lattice;iz++){
-	  int Li = (ix*lattice+iy)*lattice+iz;
-	  int i = latticeA[Li];
+    for(int ix=0;ix<division;ix++){
+      for(int iy=0;iy<division;iy++){
+	for(int iz=0;iz<division;iz++){
+	  int Li = address(ix,iy,iz,division);
+	  int i = residentA[Li];
 	  if ( i >= 0 ){
 	    float opi = op[i];
 	    //lattice A
-	    for(int jx=0;jx<lattice;jx++){
-	      for(int jy=0;jy<lattice;jy++){
-		for(int jz=0;jz<lattice;jz++){
-		  int Lj = (jx*lattice+jy)*lattice+jz;
-		  int j = latticeA[Lj];
+	    for(int jx=0;jx<division;jx++){
+	      for(int jy=0;jy<division;jy++){
+		for(int jz=0;jz<division;jz++){
+		  int Lj = address(jx,jy,jz,division);
+		  int j = residentA[Lj];
 		  if ( j > i ){
 		    Vector3d delta = Wrap(waters[i].com-waters[j].com,box);
 		    float opj = op[j];
@@ -343,17 +257,20 @@ int main(int argc, char* argv[])
   //mode 3 : network topology only
   //mode 4 : CoM coordinate in @AR3A.
   if ( argc == 2 ){
-    if ( strcmp(argv[1], "-0") == 0 ){
+    if ( strcmp(argv[1], "-0") == 0 ){      // raw order parameter only
       mode = 0;
     }
-    if ( strcmp(argv[1], "-r") == 0 ){
+    if ( strcmp(argv[1], "-r") == 0 ){      // +clustering & spatial corr
       mode = 2;
     }
-    else if ( strcmp(argv[1], "-n") == 0 ){
+    else if ( strcmp(argv[1], "-n") == 0 ){  // network only
       mode = 3;
     }
-    else if ( strcmp(argv[1], "-c") == 0 ){
+    else if ( strcmp(argv[1], "-c") == 0 ){ // coordinate only
       mode = 4;
+    }
+    else if ( strcmp(argv[1], "-q") == 0 ){ // topological quench
+      mode = 5;
     }
   }
   oneframe(mode);

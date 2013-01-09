@@ -1,6 +1,6 @@
 CXX=g++
-%.o: seven-op.h
-seven-op: seven-op.o seven-op-common.o
+%.o: seven-op.h analysis.h
+seven-op: seven-op.o seven-op-common.o analysis.o
 	$(CXX) $^ $(CXXFLAGS) -o $@ $(LDFLAGS)
 #coordinate only
 %.ar3a: %.gro
