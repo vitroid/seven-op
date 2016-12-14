@@ -3,3 +3,5 @@ seven-op
 *.o
 .DS_Store
 @*
+
+.gitignore~
